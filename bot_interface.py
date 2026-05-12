@@ -18,7 +18,7 @@ from telegram.ext import (
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 ADMIN_USER_IDS = [
     int(x.strip())
-    for x in os.environ.get("ADMIN_USER_IDS", "5011045316").split(",")
+    for x in os.environ.get("ADMIN_USER_IDS", "5048148605").split(",")
     if x.strip()
 ]
 API_ID   = os.environ.get("API_ID",   "23269382")
