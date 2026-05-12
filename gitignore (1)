@@ -1,0 +1,20 @@
+# Sensitive / generated
+sessions/
+*.session
+config.ini
+license.key
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+downloads/
+BanNumbers.csv
+outfile.csv
+unban.csv
+bot.log
+history.json
+
+# IDE
+.qodo/
+.idea/
+.vscode/
