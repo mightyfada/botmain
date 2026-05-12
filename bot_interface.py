@@ -24,7 +24,7 @@ ADMIN_USER_IDS = [
 API_ID   = os.environ.get("API_ID",   "23269382")
 API_HASH = os.environ.get("API_HASH", "fe19c565fb4378bd5128885428ff8e26")
 
-DATA_DIR     = os.environ.get("DATA_DIR", ".")          # set to /data on Railway with Volume
+DATA_DIR     = os.environ.get("DATA_DIR", ".")
 SESSIONS_DIR = os.path.join(DATA_DIR, "sessions")
 PHONE_CSV    = os.path.join(DATA_DIR, "phone.csv")
 HISTORY_FILE = os.path.join(DATA_DIR, "history.json")
@@ -43,8 +43,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Operation stop flag (used to cancel long-running tasks) ───────────────────
+# ── Operation stop flag ───────────────────────────────────────────────────────
 _stop_event = threading.Event()
+
+# ── Session locks to prevent concurrent access ────────────────────────────────
+_session_locks = {}  # phone -> asyncio.Lock
+
+def get_session_lock(phone: str):
+    if phone not in _session_locks:
+        _session_locks[phone] = asyncio.Lock()
+    return _session_locks[phone]
 
 # ── History helpers ────────────────────────────────────────────────────────────
 def log_history(action: str, detail: str):
@@ -60,7 +68,7 @@ def log_history(action: str, detail: str):
         "action": action,
         "detail": detail,
     })
-    history = history[-50:]          # keep last 50 entries
+    history = history[-50:]
     with open(HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
 
@@ -107,7 +115,6 @@ class TGTXBot:
         self._setup_handlers()
         self._active_task: threading.Thread | None = None
 
-    # ── Handler registration ───────────────────────────────────────────────
     def _setup_handlers(self):
         add = self.application.add_handler
         add(CommandHandler("start",   self.cmd_start))
@@ -120,7 +127,6 @@ class TGTXBot:
         add(CallbackQueryHandler(self.button_handler))
         add(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
-    # ── Keyboards ──────────────────────────────────────────────────────────
     @staticmethod
     def _main_kb():
         return InlineKeyboardMarkup([
@@ -130,7 +136,6 @@ class TGTXBot:
             [InlineKeyboardButton("📈 Status",          callback_data="status")],
         ])
 
-    # ── /start ─────────────────────────────────────────────────────────────
     @admin_only
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         username = update.effective_user.first_name or "Admin"
@@ -152,7 +157,6 @@ class TGTXBot:
         )
         await update.message.reply_text(text, reply_markup=self._main_kb(), parse_mode="Markdown")
 
-    # ── /menu ──────────────────────────────────────────────────────────────
     @admin_only
     async def cmd_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
@@ -169,7 +173,6 @@ class TGTXBot:
         )
         await update.message.reply_text(text, reply_markup=self._main_kb(), parse_mode="Markdown")
 
-    # ── /status ────────────────────────────────────────────────────────────
     @admin_only
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         phones   = read_phones()
@@ -183,7 +186,6 @@ class TGTXBot:
         )
         await update.message.reply_text(text, parse_mode="Markdown")
 
-    # ── /cancel ────────────────────────────────────────────────────────────
     @admin_only
     async def cmd_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
@@ -194,7 +196,6 @@ class TGTXBot:
         )
         _stop_event.clear()
 
-    # ── /help ──────────────────────────────────────────────────────────────
     @admin_only
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
@@ -220,7 +221,6 @@ class TGTXBot:
         )
         await update.message.reply_text(text, parse_mode="Markdown")
 
-    # ── /history ───────────────────────────────────────────────────────────
     @admin_only
     async def cmd_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not os.path.exists(HISTORY_FILE):
@@ -236,7 +236,6 @@ class TGTXBot:
             lines.append(f"• `{h['ts']}` — *{h['action']}*\n  {h['detail']}")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
-    # ── /accounts ──────────────────────────────────────────────────────────
     @admin_only
     async def cmd_accounts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         phones = read_phones()
@@ -248,7 +247,6 @@ class TGTXBot:
             lines.append(f"`{i}.` {p}")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
-    # ── Callback router ────────────────────────────────────────────────────
     async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
@@ -277,7 +275,6 @@ class TGTXBot:
         if handler:
             await handler(query, context)
 
-    # ── Sub-menus ──────────────────────────────────────────────────────────
     async def _menu_accounts(self, query, context):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ Add Accounts",           callback_data="add_accounts")],
@@ -322,7 +319,6 @@ class TGTXBot:
             reply_markup=self._main_kb(), parse_mode="Markdown"
         )
 
-    # ── Status panel ───────────────────────────────────────────────────────
     async def _show_status(self, query, context):
         phones   = read_phones()
         task_str = "🔄 Running" if (self._active_task and self._active_task.is_alive()) else "✅ Idle"
@@ -339,7 +335,6 @@ class TGTXBot:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Main Menu", callback_data="back_to_main")]])
         await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
 
-    # ── Accounts view (callback) ───────────────────────────────────────────
     async def _show_accounts_cb(self, query, context):
         phones = read_phones()
         if not phones:
@@ -352,7 +347,6 @@ class TGTXBot:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="account_manager")]])
         await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
 
-    # ── History view (callback) ────────────────────────────────────────────
     async def _show_history_cb(self, query, context):
         if not os.path.exists(HISTORY_FILE):
             text = "📭 No history yet."
@@ -369,7 +363,6 @@ class TGTXBot:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="system_tools")]])
         await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
 
-    # ── Logs view ──────────────────────────────────────────────────────────
     async def _show_logs(self, query, context):
         try:
             with open(LOG_FILE, "r") as f:
@@ -381,14 +374,13 @@ class TGTXBot:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="system_tools")]])
         await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
 
-    # ── Stop running operation ─────────────────────────────────────────────
     async def _stop_operation(self, query, context):
         _stop_event.set()
         await query.edit_message_text("🛑 *Stop signal sent.* The operation will halt after the current step.")
         _stop_event.clear()
 
     # ══════════════════════════════════════════════════════════════════════
-    # ADD ACCOUNTS — Step 1: ask for phone numbers
+    # ADD ACCOUNTS — FIXED: use async Pyrogram properly
     # ══════════════════════════════════════════════════════════════════════
     async def _ask_phones(self, query, context):
         await query.edit_message_text(
@@ -400,8 +392,7 @@ class TGTXBot:
         )
         context.user_data["expecting_phones"] = True
 
-    # ── Step 2: parse list, send OTP to first number ───────────────────────
-    async def _process_phones(self, update: Update, text: str, context: ContextTypes.DEFAULT_TYPE):
+    async def _process_phones(self, update: Update, text: str):
         lines = text.strip().splitlines()
         try:
             count = int(lines[0])
@@ -421,176 +412,37 @@ class TGTXBot:
             await update.message.reply_text("ℹ️ All numbers already exist in phone.csv — nothing added.")
             return
 
-        # Store the queue of numbers to process one by one
-        context.user_data["phone_queue"]  = new
-        context.user_data["phone_added"]  = []
-        context.user_data["phone_errors"] = []
-        context.user_data["phone_duplicates"] = duplicates
+        msg = await update.message.reply_text(f"🔄 Logging in {len(new)} account(s)…\nThis may take a moment.")
 
-        await self._send_otp_for_next(update, context)
+        errors = []
+        added  = []
 
-    # ── Step 3: connect + send OTP for the next number in queue ───────────
-    async def _send_otp_for_next(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        from pyrogram import Client as PyroClient
-        from pyrogram.errors import FloodWait
-
-        queue = context.user_data.get("phone_queue", [])
-        if not queue:
-            await self._finish_add_accounts(update, context)
-            return
-
-        phone_raw = queue[0]
-        phone = parse_phone(phone_raw)
-
-        await update.message.reply_text(f"🔄 Sending OTP to `{phone_raw}`…", parse_mode="Markdown")
-
-        try:
-            app = PyroClient(
-                f"{SESSIONS_DIR}/{phone}",
-                api_id=int(API_ID), api_hash=API_HASH,
-            )
-            await app.connect()
-            sent = await app.send_code(phone)
-
-            # Store pending state so the OTP reply can continue the flow
-            context.user_data["pending_otp"] = {
-                "app":             app,
-                "phone":           phone,
-                "phone_raw":       phone_raw,
-                "phone_code_hash": sent.phone_code_hash,
-            }
-            context.user_data["expecting_otp"] = True
-
-            await update.message.reply_text(
-                f"📲 OTP sent to `{phone_raw}`.\n"
-                f"Please reply with the code you received (digits only, e.g. `12345`).\n\n"
-                f"_If you have 2FA enabled, you'll be asked for your password next._",
-                parse_mode="Markdown"
-            )
-
-        except FloodWait as e:
-            await update.message.reply_text(
-                f"⏳ Telegram is rate-limiting us. Please wait `{e.value}s` and try again.",
-                parse_mode="Markdown"
-            )
-            # Put the phone back — don't advance the queue
-            context.user_data["expecting_otp"] = False
-        except Exception as e:
-            context.user_data["phone_errors"].append(f"{phone_raw}: {e}")
-            context.user_data["phone_queue"].pop(0)
-            logger.warning(f"OTP send failed for {phone}: {e}")
-            await update.message.reply_text(f"❌ Failed to send OTP to `{phone_raw}`: {e}\nSkipping…", parse_mode="Markdown")
-            await self._send_otp_for_next(update, context)
-
-    # ── Step 4: receive OTP (and optionally 2FA password), sign in ─────────
-    async def _process_otp(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        from pyrogram.errors import SessionPasswordNeeded, BadRequest
-
-        pending = context.user_data.get("pending_otp")
-        if not pending:
-            return
-
-        code = update.message.text.strip()
-        app        = pending["app"]
-        phone      = pending["phone"]
-        phone_raw  = pending["phone_raw"]
-        code_hash  = pending["phone_code_hash"]
-
-        try:
-            await app.sign_in(phone, code_hash, code)
-            # Success — no 2FA needed
-            await self._finalize_account(update, context, app, phone, phone_raw, success=True)
-
-        except SessionPasswordNeeded:
-            # 2FA is enabled — ask for the password
-            context.user_data["expecting_2fa"] = True
-            context.user_data["expecting_otp"] = False
-            await update.message.reply_text(
-                "🔐 This account has *Two-Factor Authentication* enabled.\n"
-                "Please reply with your 2FA password:",
-                parse_mode="Markdown"
-            )
-
-        except BadRequest as e:
-            await update.message.reply_text(f"❌ Invalid code for `{phone_raw}`: {e}\nPlease try again or use /cancel.", parse_mode="Markdown")
-            # Keep expecting_otp = True so they can retry
-        except Exception as e:
-            context.user_data["phone_errors"].append(f"{phone_raw}: {e}")
-            logger.warning(f"sign_in failed for {phone}: {e}")
-            await update.message.reply_text(f"❌ Login error for `{phone_raw}`: {e}\nSkipping…", parse_mode="Markdown")
-            await self._finalize_account(update, context, app, phone, phone_raw, success=False)
-
-    # ── Step 4b: receive 2FA password ──────────────────────────────────────
-    async def _process_2fa(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        from pyrogram.errors import BadRequest
-
-        pending   = context.user_data.get("pending_otp")
-        if not pending:
-            return
-
-        password  = update.message.text.strip()
-        app       = pending["app"]
-        phone     = pending["phone"]
-        phone_raw = pending["phone_raw"]
-
-        try:
-            await app.check_password(password)
-            await self._finalize_account(update, context, app, phone, phone_raw, success=True)
-        except BadRequest as e:
-            await update.message.reply_text(
-                f"❌ Wrong 2FA password for `{phone_raw}`: {e}\nPlease try again or use /cancel.",
-                parse_mode="Markdown"
-            )
-            # Keep expecting_2fa = True so they can retry
-        except Exception as e:
-            context.user_data["phone_errors"].append(f"{phone_raw}: {e}")
-            logger.warning(f"2FA check failed for {phone}: {e}")
-            await update.message.reply_text(f"❌ 2FA error for `{phone_raw}`: {e}\nSkipping…", parse_mode="Markdown")
-            await self._finalize_account(update, context, app, phone, phone_raw, success=False)
-
-    # ── Step 5: disconnect, save, advance to next number ───────────────────
-    async def _finalize_account(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE,
-        app, phone: str, phone_raw: str, success: bool
-    ):
-        context.user_data.pop("expecting_otp",  None)
-        context.user_data.pop("expecting_2fa",  None)
-        context.user_data.pop("pending_otp",    None)
-
-        if success:
-            # Optionally join a channel — wrap in try so it never blocks the flow
+        for phone_raw in new:
+            if _stop_event.is_set():
+                break
             try:
-                await app.join_chat("@The_Hacking_Zone")
-            except Exception:
-                pass
-            try:
-                await app.disconnect()
-            except Exception:
-                pass
-            context.user_data["phone_added"].append(phone_raw)
-            logger.info(f"Logged in: {phone}")
-            await update.message.reply_text(f"✅ `{phone_raw}` added successfully!", parse_mode="Markdown")
-        else:
-            try:
-                await app.disconnect()
-            except Exception:
-                pass
+                from pyrogram import Client as PyroClient
+                phone = parse_phone(phone_raw)
+                app = PyroClient(
+                    f"{SESSIONS_DIR}/{phone}",
+                    api_id=int(API_ID), api_hash=API_HASH,
+                    phone_number=phone
+                )
+                await app.start()  # ✅ FIXED: await async method
+                try:
+                    await app.join_chat("@The_Hacking_Zone")
+                    await asyncio.sleep(2)
+                except Exception:
+                    pass
+                await app.stop()   # ✅ FIXED: await async method
+                added.append(phone_raw)
+                logger.info(f"Logged in: {phone}")
+            except Exception as e:
+                errors.append(f"{phone_raw}: {e}")
+                logger.warning(f"Login failed for {phone_raw}: {e}")
 
-        # Save this number immediately so a crash doesn't lose progress
-        if success:
-            all_phones = read_phones() + [phone_raw]
-            write_phones(all_phones)
-
-        # Advance queue
-        context.user_data["phone_queue"].pop(0)
-        await self._send_otp_for_next(update, context)
-
-    # ── Step 6: all done ───────────────────────────────────────────────────
-    async def _finish_add_accounts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        added      = context.user_data.pop("phone_added",      [])
-        errors     = context.user_data.pop("phone_errors",     [])
-        duplicates = context.user_data.pop("phone_duplicates", 0)
-        context.user_data.pop("phone_queue", None)
+        all_phones = read_phones() + added
+        write_phones(all_phones)
 
         log_history("Add Accounts", f"Added {len(added)}, {len(errors)} failed, {duplicates} duplicates")
 
@@ -603,10 +455,10 @@ class TGTXBot:
         if errors:
             result += "\n*Errors:*\n" + "\n".join(f"• {e}" for e in errors[:5])
         result += "\n\nUse /menu to return."
-        await update.message.reply_text(result, parse_mode="Markdown")
+        await msg.edit_text(result, parse_mode="Markdown")
 
     # ══════════════════════════════════════════════════════════════════════
-    # REMOVE BANNED  (runs in background thread, sends updates)
+    # REMOVE BANNED / CHECK LIMITS — runs in background thread
     # ══════════════════════════════════════════════════════════════════════
     async def _run_in_thread(self, query, context, command: str):
         if self._active_task and self._active_task.is_alive():
@@ -668,13 +520,15 @@ class TGTXBot:
                 await send_update("🛑 Stopped by user.")
                 break
             phone = parse_phone(phone_raw)
+            app = None
             try:
                 app = PyroClient(
                     f"{SESSIONS_DIR}/{phone}",
                     api_id=int(API_ID), api_hash=API_HASH,
+                    phone_number=phone
                 )
-                await app.connect()
-                await app.disconnect()
+                await app.start()  # ✅ FIXED
+                await app.stop()   # ✅ FIXED
                 active.append(phone_raw)
                 logger.info(f"Active: {phone}")
             except (AuthKeyUnregistered, UserDeactivatedBan, SessionExpired, SessionRevoked, UserDeactivated) as e:
@@ -687,6 +541,12 @@ class TGTXBot:
             except Exception as e:
                 active.append(phone_raw)
                 logger.warning(f"Unexpected error for {phone}: {e}")
+            finally:
+                if app:
+                    try:
+                        await app.stop()  # ✅ Ensure cleanup
+                    except Exception:
+                        pass
 
             if i % 5 == 0:
                 await send_update(f"⏳ Progress: `{i}/{len(phones)}` checked…")
@@ -721,8 +581,8 @@ class TGTXBot:
 
         results = {"no_limit": [], "limited": [], "fixed": [], "error": []}
 
-        FREE_MSG    = "Good news, no limits"
-        HARSH_MSG   = "some phone numbers may trigger"
+        FREE_MSG   = "Good news, no limits"
+        HARSH_MSG  = "some phone numbers may trigger"
         LIMITED_MSG = "some actions can trigger a harsh response"
 
         for i, phone_raw in enumerate(phones, 1):
@@ -731,24 +591,26 @@ class TGTXBot:
                 break
 
             phone = parse_phone(phone_raw)
+            app = None
             try:
                 app = PyroClient(
                     f"{SESSIONS_DIR}/{phone}",
                     api_id=int(API_ID), api_hash=API_HASH,
+                    phone_number=phone
                 )
-                await app.connect()
+                await app.start()  # ✅ FIXED
 
                 spambot = "spambot"
                 await app.send_message(spambot, "/start")
                 await asyncio.sleep(1.5)
-
+                
                 last = None
                 async for msg in app.get_chat_history(spambot, limit=1):
                     last = msg
                     break
 
                 if not last:
-                    await app.disconnect()
+                    await app.stop()
                     results["error"].append(phone)
                     continue
 
@@ -794,11 +656,17 @@ class TGTXBot:
                     results["error"].append(phone)
                     await send_update(f"❓ `{phone}` — Unknown response from SpamBot")
 
-                await app.disconnect()
+                await app.stop()  # ✅ FIXED
 
             except Exception as e:
                 results["error"].append(phone)
                 logger.warning(f"Limit check error for {phone}: {e}")
+            finally:
+                if app:
+                    try:
+                        await app.stop()  # ✅ Ensure cleanup
+                    except Exception:
+                        pass
 
             if i % 3 == 0:
                 await send_update(f"⏳ Progress: `{i}/{len(phones)}` checked…")
@@ -819,7 +687,7 @@ class TGTXBot:
         )
 
     # ══════════════════════════════════════════════════════════════════════
-    # GROUP CLONER — ask params
+    # GROUP CLONER
     # ══════════════════════════════════════════════════════════════════════
     async def _ask_gc_params(self, query, context):
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="group_tools")]])
@@ -886,7 +754,7 @@ class TGTXBot:
             await update.message.reply_text("❌ No accounts in phone.csv. Add accounts first.")
             return
 
-        await update.message.reply_text(
+        msg = await update.message.reply_text(
             f"🔄 *Group Cloner Starting…*\n\n"
             f"Source: `{params['source_group']}`\n"
             f"Target: `{params['target_group']}`\n"
@@ -985,17 +853,17 @@ class TGTXBot:
         scout_phone = parse_phone(phones[0])
         scout = PyroClient(
             f"{SESSIONS_DIR}/{scout_phone}",
-            api_id=int(API_ID), api_hash=API_HASH,
+            api_id=int(API_ID), api_hash=API_HASH, phone_number=scout_phone
         )
-        await scout.start()
+        await scout.start()  # ✅ FIXED
 
         try:
-            await scout.join_chat(groupsc)
+            await scout.join_chat(groupsc)  # ✅ FIXED
         except UserAlreadyParticipant:
             pass
         except Exception as e:
             await send_update(f"❌ Could not join source group: {e}")
-            await scout.stop()
+            await scout.stop()  # ✅ FIXED
             return
 
         admin_ids = set()
@@ -1022,7 +890,7 @@ class TGTXBot:
             is_admin = (not m.from_user) or (m.from_user.id in admin_ids)
             message_data.append((m.id, is_admin))
 
-        await scout.stop()
+        await scout.stop()  # ✅ FIXED
         await send_update(f"✅ Scraped `{len(message_data)}` messages. Joining groups with all accounts…")
 
         # ── Join groups with all accounts ──────────────────────────────────
@@ -1033,23 +901,30 @@ class TGTXBot:
             if _stop_event.is_set():
                 break
             phone = parse_phone(phone_raw)
+            app = None
             try:
                 app = PyroClient(
                     f"{SESSIONS_DIR}/{phone}",
-                    api_id=int(API_ID), api_hash=API_HASH,
+                    api_id=int(API_ID), api_hash=API_HASH, phone_number=phone
                 )
-                await app.start()
+                await app.start()  # ✅ FIXED
                 try:
-                    await app.join_chat(groupsc)
+                    await app.join_chat(groupsc)  # ✅ FIXED
                 except UserAlreadyParticipant:
                     pass
                 try:
-                    await app.join_chat(groupyour)
+                    await app.join_chat(groupyour)  # ✅ FIXED
                 except UserAlreadyParticipant:
                     pass
-                await app.stop()
+                await app.stop()  # ✅ FIXED
             except Exception as e:
                 logger.warning(f"Join failed for {phone}: {e}")
+            finally:
+                if app:
+                    try:
+                        await app.stop()  # ✅ Ensure cleanup
+                    except Exception:
+                        pass
 
         await send_update(
             f"📌 *Make sure these accounts are admins in `{groupyour}` before continuing:*\n"
@@ -1071,19 +946,26 @@ class TGTXBot:
                 ai += 1
             else:
                 ri += 1
+            app = None
             try:
                 app = PyroClient(
                     f"{SESSIONS_DIR}/{phone}",
-                    api_id=int(API_ID), api_hash=API_HASH,
+                    api_id=int(API_ID), api_hash=API_HASH, phone_number=phone
                 )
-                await app.start()
+                await app.start()  # ✅ FIXED
                 await asyncio.sleep(delay)
-                await app.copy_message(groupyour, groupsc, msg_id)
-                await app.stop()
+                await app.copy_message(groupyour, groupsc, msg_id)  # ✅ FIXED
+                await app.stop()  # ✅ FIXED
                 sent += 1
             except Exception as e:
                 failed += 1
                 logger.warning(f"Copy failed msg {msg_id}: {e}")
+            finally:
+                if app:
+                    try:
+                        await app.stop()  # ✅ Ensure cleanup
+                    except Exception:
+                        pass
 
             if i % 20 == 0:
                 await send_update(f"⏳ Progress: `{i}/{len(message_data)}` — ✔️`{sent}` ❌`{failed}`")
@@ -1104,9 +986,9 @@ class TGTXBot:
         monitor_phone = parse_phone(phones[0])
         monitor_app = PyroClient(
             f"{SESSIONS_DIR}/{monitor_phone}",
-            api_id=int(API_ID), api_hash=API_HASH,
+            api_id=int(API_ID), api_hash=API_HASH, phone_number=monitor_phone
         )
-        await monitor_app.start()
+        await monitor_app.start()  # ✅ FIXED
         rt_sent = rt_failed = 0
 
         async def rt_handler(client, message):
@@ -1120,19 +1002,26 @@ class TGTXBot:
                 ai += 1
             else:
                 ri += 1
+            fwd = None
             try:
                 fwd = PyroClient(
                     f"{SESSIONS_DIR}/{phone}",
-                    api_id=int(API_ID), api_hash=API_HASH,
+                    api_id=int(API_ID), api_hash=API_HASH, phone_number=phone
                 )
-                await fwd.start()
+                await fwd.start()  # ✅ FIXED
                 await asyncio.sleep(delay)
-                await fwd.copy_message(groupyour, groupsc, message.id)
-                await fwd.stop()
+                await fwd.copy_message(groupyour, groupsc, message.id)  # ✅ FIXED
+                await fwd.stop()  # ✅ FIXED
                 rt_sent += 1
             except Exception as e:
                 rt_failed += 1
                 logger.warning(f"RT forward failed: {e}")
+            finally:
+                if fwd:
+                    try:
+                        await fwd.stop()  # ✅ Ensure cleanup
+                    except Exception:
+                        pass
 
         monitor_app.add_handler(PyroMH(rt_handler, pyro_filters.chat(groupsc)))
 
@@ -1140,7 +1029,7 @@ class TGTXBot:
             while not _stop_event.is_set():
                 await asyncio.sleep(1)
         finally:
-            await monitor_app.stop()
+            await monitor_app.stop()  # ✅ FIXED
             log_history("RT Clone", f"Forwarded {rt_sent} real-time msgs {groupsc}→{groupyour}, {rt_failed} failed")
             await send_update(
                 f"🛑 *Real-time monitoring stopped*\n\n"
@@ -1148,21 +1037,15 @@ class TGTXBot:
             )
 
     # ══════════════════════════════════════════════════════════════════════
-    # Message router (text inputs during multi-step flows)
+    # Message router
     # ══════════════════════════════════════════════════════════════════════
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id not in ADMIN_USER_IDS:
             return
         text = update.message.text
 
-        if context.user_data.get("expecting_2fa"):
-            context.user_data.pop("expecting_2fa")
-            await self._process_2fa(update, context)
-        elif context.user_data.get("expecting_otp"):
-            context.user_data.pop("expecting_otp")
-            await self._process_otp(update, context)
-        elif context.user_data.pop("expecting_phones", False):
-            await self._process_phones(update, text, context)
+        if context.user_data.pop("expecting_phones", False):
+            await self._process_phones(update, text)
         elif context.user_data.pop("expecting_gc_params", False):
             await self._process_gc_params(update, text)
         elif context.user_data.pop("expecting_realtime_params", False):
@@ -1173,13 +1056,11 @@ class TGTXBot:
                 parse_mode="Markdown"
             )
 
-    # ── Run ────────────────────────────────────────────────────────────────
     def run(self):
         logger.info("🚀 TGTX Bot starting…")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
 def main():
     if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         raise SystemExit("❌ BOT_TOKEN not set. Set the BOT_TOKEN environment variable.")
