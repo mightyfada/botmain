@@ -88,14 +88,14 @@ def parse_phone(raw: str) -> str:
 
 # ── Admin check decorator ──────────────────────────────────────────────────────
 def admin_only(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = (update.effective_user or update.callback_query.from_user).id
         if uid not in ADMIN_USER_IDS:
             target = update.message or (update.callback_query and update.callback_query.message)
             if target:
                 await target.reply_text("❌ Unauthorized access.")
             return
-        return await func(update, context)
+        return await func(self, update, context)
     wrapper.__name__ = func.__name__
     return wrapper
 
