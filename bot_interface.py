@@ -88,14 +88,14 @@ def parse_phone(raw: str) -> str:
 
 # ── Admin check decorator ──────────────────────────────────────────────────────
 def admin_only(func):
-    async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = (update.effective_user or update.callback_query.from_user).id
         if uid not in ADMIN_USER_IDS:
             target = update.message or (update.callback_query and update.callback_query.message)
             if target:
                 await target.reply_text("❌ Unauthorized access.")
             return
-        return await func(self, update, context)
+        return await func(update, context)
     wrapper.__name__ = func.__name__
     return wrapper
 
@@ -138,19 +138,19 @@ class TGTXBot:
             "━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "🚀 *TGTX Bot Controller v3.0*\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"👋 Welcome, *{username}*\\!\n\n"
+            f"👋 Welcome, *{username}*!\n\n"
             "🎯 *Features:*\n"
-            "• Multi\\-Account Management\n"
+            "• Multi-Account Management\n"
             "• Group Cloning & Migration\n"
-            "• Real\\-time Message Forwarding\n"
-            "• Limit Checker & Auto\\-Removal\n"
+            "• Real-time Message Forwarding\n"
+            "• Limit Checker & Auto-Removal\n"
             "• Ban Detection & Cleanup\n"
             "• Operation History\n\n"
             "⚡ *Status:* ACTIVE & READY\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "Select an option below:"
         )
-        await update.message.reply_text(text, reply_markup=self._main_kb(), parse_mode="MarkdownV2")
+        await update.message.reply_text(text, reply_markup=self._main_kb(), parse_mode="Markdown")
 
     # ── /menu ──────────────────────────────────────────────────────────────
     @admin_only
@@ -189,7 +189,7 @@ class TGTXBot:
         context.user_data.clear()
         _stop_event.set()
         await update.message.reply_text(
-            "❌ *Operation Cancelled*\n\nAll pending operations stopped.\nUse /menu to start fresh\\!",
+            "❌ *Operation Cancelled*\n\nAll pending operations stopped.\nUse /menu to start fresh!",
             parse_mode="Markdown"
         )
         _stop_event.clear()
@@ -396,8 +396,8 @@ class TGTXBot:
             "📱 *Add Accounts*\n\n"
             "Send phone numbers like this:\n"
             "```\n3\n+1234567890\n+1234567891\n+1234567892\n```\n"
-            "First line = count, then one number per line \\(with country code\\)\\.",
-            parse_mode="MarkdownV2"
+            "First line = count, then one number per line (with country code).",
+            parse_mode="Markdown"
         )
         context.user_data["expecting_phones"] = True
 
@@ -945,9 +945,9 @@ class TGTXBot:
         if not realtime:
             log_history("GC Clone", f"Cloned {sent} msgs {groupsc}→{groupyour}, {failed} failed")
             await send_update(
-                f"🎉 *Clone Complete\\!*\n\n"
+                f"🎉 *Clone Complete!*\n\n"
                 f"✔️ Sent: `{sent}`\n❌ Failed: `{failed}`\n\n"
-                f"Use /menu to continue\\."
+                f"Use /menu to continue."
             )
             return
 
