@@ -1,0 +1,9 @@
+python-telegram-bot==20.7
+cryptography==41.0.7
+pyrogram==2.0.106
+tgcrypto==1.2.5
+colorama==0.4.6
+pyfiglet==0.8.post1
+faker==19.6.2
+geopy==2.3.0
+requests==2.31.0
